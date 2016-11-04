@@ -2,3 +2,5 @@
 target/
 nb-configuration.xml
 guacamole/customs.json
+repository/
+**/.DS_Store
