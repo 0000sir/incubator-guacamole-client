@@ -19,22 +19,30 @@
 
 package org.apache.guacamole.auth.noauth;
 
-import java.util.Map;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.Reader;
+import java.util.HashMap;
+import java.util.Map;
+
+import javax.servlet.http.HttpServletRequest;
+
 import org.apache.guacamole.GuacamoleException;
 import org.apache.guacamole.GuacamoleServerException;
 import org.apache.guacamole.environment.Environment;
 import org.apache.guacamole.environment.LocalEnvironment;
-import org.apache.guacamole.net.auth.simple.SimpleAuthenticationProvider;
+import org.apache.guacamole.net.auth.AuthenticatedUser;
 import org.apache.guacamole.net.auth.Credentials;
+import org.apache.guacamole.net.auth.UserContext;
+import org.apache.guacamole.net.auth.simple.SimpleAuthenticationProvider;
+import org.apache.guacamole.net.auth.simple.SimpleUser;
+import org.apache.guacamole.net.auth.simple.SimpleUserContext;
 import org.apache.guacamole.properties.FileGuacamoleProperty;
 import org.apache.guacamole.protocol.GuacamoleConfiguration;
-import org.slf4j.LoggerFactory;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
@@ -178,19 +186,35 @@ public class NoAuthenticationProvider extends SimpleAuthenticationProvider {
 
     @Override
     public Map<String, GuacamoleConfiguration> getAuthorizedConfigurations(Credentials credentials) throws GuacamoleException {
-
-        // Check mapping file mod time
-        File configFile = getConfigurationFile();
-        if (configFile.exists() && configTime < configFile.lastModified()) {
-
-            // If modified recently, gain exclusive access and recheck
-            synchronized (this) {
-                if (configFile.exists() && configTime < configFile.lastModified()) {
-                    logger.debug("Configuration file \"{}\" has been modified.", configFile);
-                    init(); // If still not up to date, re-init
-                }
-            }
-
+    	
+    	HttpServletRequest request = credentials.getRequest();
+    	
+    	// opt 1. check request param of shortcut
+    	if(request.getParameter("shortcut")!=null){
+    		configs = readConfigFromRequest(credentials);
+    	}else{
+	    	// opt 2. use config file
+	        // Check mapping file mod time
+	        File configFile = getConfigurationFile();
+	        if (configFile.exists() && configTime < configFile.lastModified()) {
+	
+	            // If modified recently, gain exclusive access and recheck
+	            synchronized (this) {
+	                if (configFile.exists() && configTime < configFile.lastModified()) {
+	                    logger.debug("Configuration file \"{}\" has been modified.", configFile);
+	                    init(); // If still not up to date, re-init
+	                }
+	            }
+	
+	        }
+    	}
+    	
+    	for(String name : configs.keySet()){
+        	GuacamoleConfiguration c = configs.get(name);
+        	logger.debug("GET CONFIG OF "+name);
+        	for(String c_name : c.getParameters().keySet()){
+        		logger.debug("HOST-CONFIG: {} = {}", c_name, c.getParameters().get(c_name));
+        	} 
         }
 
         // If no mapping available, report as such
@@ -199,5 +223,61 @@ public class NoAuthenticationProvider extends SimpleAuthenticationProvider {
 
         return configs;
 
+    }
+    
+    private Map<String, GuacamoleConfiguration> readConfigFromRequest(Credentials credentials){
+    	HttpServletRequest request = credentials.getRequest();
+    	
+    	@SuppressWarnings("unchecked")
+		Map<String, String[]> params = request.getParameterMap();
+		GuacamoleConfiguration config = new GuacamoleConfiguration();
+		for (String name : params.keySet()) {
+            String value = request.getParameter(name);
+            if(name.equalsIgnoreCase("protocol")){
+            	config.setProtocol( request.getParameter(name));
+            }else{
+            	config.setParameter(name, value);
+            }
+            logger.debug("kv: {} = {}", name, value);
+        }
+
+		configs = new HashMap<String, GuacamoleConfiguration>();
+		String config_name = ""+ System.currentTimeMillis();
+		configs.put(request.getParameter("hostname"), config);
+    	return configs;
+    }
+    
+    @Override
+    public UserContext getUserContext(AuthenticatedUser authenticatedUser)
+            throws GuacamoleException {
+
+        // Get configurations
+        configs = getAuthorizedConfigurations(authenticatedUser.getCredentials());
+
+        // Return as unauthorized if not authorized to retrieve configs
+        if (configs == null)
+            return null;
+
+        // Return user context restricted to authorized configs
+        return new SimpleUserContext(this, authenticatedUser.getIdentifier(), configs);
+
+    }
+
+    @Override
+    public AuthenticatedUser updateAuthenticatedUser(AuthenticatedUser authenticatedUser,
+            Credentials credentials) throws GuacamoleException {
+    	
+        return authenticatedUser;
+
+    }
+
+    @Override
+    public UserContext updateUserContext(UserContext context,
+        AuthenticatedUser authorizedUser, Credentials credentials)
+            throws GuacamoleException {
+
+        // Simply return the given context, updating nothing
+        return getUserContext(authorizedUser);
+        
     }
 }
